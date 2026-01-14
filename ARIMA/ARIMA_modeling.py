@@ -271,19 +271,19 @@ if lb_test.iloc[0]['lb_pvalue'] > 0.05:
 else:
     print("警告：残差不是白噪声，模型可能未充分捕捉数据规律")
 
-# 残差图
+# 残差图 - 包含模型信息
 plt.figure(figsize=(10, 6))
 plt.plot(residuals)
-plt.title('模型残差')
+plt.title(f'模型残差 - ARIMA{best_param}')
 plt.xlabel('年份')
 plt.ylabel('残差')
 plt.grid(True)
-plt.savefig('residuals.png', dpi=300, bbox_inches='tight')
-print("\n残差图已保存为 residuals.png")
+plt.savefig(f'residuals_ARIMA{best_param}.png', dpi=300, bbox_inches='tight')
+print(f"\n残差图已保存为 residuals_ARIMA{best_param}.png")
 
-# 残差ACF图
+# 残差ACF图 - 包含模型信息
 plt.figure(figsize=(10, 6))
 plot_acf(residuals, lags=20)
-plt.title('残差自相关函数 (ACF)')
-plt.savefig('residuals_acf.png', dpi=300, bbox_inches='tight')
-print("\n残差ACF图已保存为 residuals_acf.png")
+plt.title(f'残差自相关函数 (ACF) - ARIMA{best_param}')
+plt.savefig(f'residuals_acf_ARIMA{best_param}.png', dpi=300, bbox_inches='tight')
+print(f"\n残差ACF图已保存为 residuals_acf_ARIMA{best_param}.png")
