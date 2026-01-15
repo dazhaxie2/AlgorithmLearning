@@ -18,6 +18,37 @@ rcParams['axes.unicode_minus'] = False  # 正常显示负号
 matplotlib.use('Agg')
 
 # 1. 创建示例数据（如果CSV文件不存在）
+def load_external_data(file_path=None, url=None):
+    """
+    加载外部数据源
+    可以从指定路径的文件或URL加载数据
+    """
+    if url:
+        try:
+            # 尝试从URL加载数据
+            print(f"正在从URL加载数据: {url}")
+            data = pd.read_csv(url)
+            print("成功从URL加载数据")
+            return data
+        except Exception as e:
+            print(f"从URL加载数据失败: {e}")
+    
+    if file_path:
+        try:
+            # 尝试从指定路径加载数据
+            print(f"正在从文件路径加载数据: {file_path}")
+            data = pd.read_csv(file_path)
+            print("成功从文件路径加载数据")
+            return data
+        except FileNotFoundError:
+            print(f"指定的数据文件未找到: {file_path}")
+        except Exception as e:
+            print(f"从文件路径加载数据失败: {e}")
+    
+    # 如果没有指定外部数据源或加载失败，使用默认的示例数据
+    print("未找到外部数据源，正在创建示例数据...")
+    return create_sample_data()
+
 def create_sample_data():
     """创建示例数据，用于演示（实际使用时请替换为真实数据）"""
     years = list(range(1952, 1989))
@@ -36,13 +67,13 @@ def create_sample_data():
     print("示例数据已创建，保存为 '1952-1988年中国农业实际国民收入指数序列.csv'")
     return df
 
-# 尝试读取数据，如果不存在则创建示例数据
-try:
-    data = pd.read_csv("1952-1988年中国农业实际国民收入指数序列.csv")
-    print("成功加载数据文件")
-except FileNotFoundError:
-    print("数据文件未找到，正在创建示例数据...")
-    data = create_sample_data()
+# 尝试加载外部数据源
+# 这里您可以指定自己的数据文件路径或URL
+external_file_path = "../1952-1988年中国农业实际国民收入指数序列.csv"  # 相对于当前文件的外部数据路径
+# external_url = "https://example.com/data.csv"  # 或者使用URL
+
+# 加载数据（优先级：外部文件路径 -> 外部URL -> 示例数据）
+data = load_external_data(file_path=external_file_path)
 
 # 清理列名
 data.columns = data.columns.str.strip()
