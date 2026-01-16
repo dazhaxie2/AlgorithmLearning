@@ -1,94 +1,16 @@
 import os
-os.environ['KMP_DUPLICATE_LIB_OK']='True'
-
 import torch
 from torch import nn
-from torch.nn import Embedding, RNNCell
 import torch.nn.functional as F
+from torch.utils.data import DataLoader, TensorDataset
 import numpy as np
-import matplotlib.pyplot as plt
 import pandas as pd
+import matplotlib.pyplot as plt
 
-# 一个简单的RNN结构示例
-class SimpleRNN(nn.Module):
-    def __init__(self, input_size, hidden_size):
-        super(SimpleRNN, self).__init__()
-        self.rnn  = nn.RNN(input_size, hidden_size, batch_first=True)
-    
-    def forward(self, x):
-        out, _ = self.rnn(x)
-        return out
+# 设置环境变量以避免OpenMP库冲突
+os.environ['KMP_DUPLICATE_LIB_OK']='True'
 
-class SentimentRNN:
-    def __init__(self, vocab_size, embed_size, hidden_size, output_size):
-        # 词嵌入层
-        self.embed = Embedding(vocab_size, embed_size)
-        
-        # RNN层
-        self.rnn = RNNCell(embed_size, hidden_size)
-        
-        # 输出层（情感分类：正面/负面）
-        self.W_ho = nn.Parameter(torch.randn(output_size, hidden_size))
-        self.b_o = nn.Parameter(torch.randn(output_size))
-    
-    def forward(self, text):
-        # text: [batch_size, seq_len]
-        
-        # 1. 词嵌入
-        embedded = self.embed(text)  # [batch_size, seq_len, embed_size]
-        
-        # 2. RNN处理序列
-        batch_size, seq_len, _ = embedded.size()
-        h_t = torch.zeros(batch_size, hidden_size)  # 初始隐藏状态
-        for t in range(seq_len):
-            x_t = embedded[:, t, :]  # 当前时间步的输入
-            h_t = self.rnn(x_t, h_t)  # 更新隐藏状态
-        
-        # 3. 最后时间步的输出（整个句子的表示）
-        # y = W_ho·h_last + b_o
-        logits = torch.matmul(h_t, self.W_ho.T) + self.b_o
-        
-        # 4. 二分类：sigmoid得到概率
-        probs = torch.sigmoid(logits)
-        
-        return probs
-
-# 时间序列预测RNN模型
-class TimeSeriesRNN(nn.Module):
-    def __init__(self, input_size=1, hidden_size=32, output_size=1, num_layers=1):
-        """
-        初始化时间序列预测专用的RNN模型
-        Args:
-            input_size (int): 输入特征维度，即每个时间步的输入数据维度，默认1（单变量时间序列）
-            hidden_size (int): RNN隐藏层的维度/神经元数量，决定模型的记忆容量，默认32
-            output_size (int): 输出结果维度，即模型预测结果的维度，默认1（单变量时间序列预测）
-            num_layers (int): RNN的层数，多层RNN可提升模型表达能力，默认1（单层RNN）
-        """
-        # 调用父类nn.Module的初始化方法，这是PyTorch自定义模型的必备步骤
-        super(TimeSeriesRNN, self).__init__()
-        
-        # 将隐藏层维度保存为实例属性，方便后续前向传播等方法调用
-        self.hidden_size = hidden_size
-        
-        # 将RNN层数保存为实例属性，方便后续初始化隐藏状态等操作使用
-        self.num_layers = num_layers
-        
-        # 定义核心RNN层，构建循环神经网络结构
-        # batch_first=True：指定输入输出数据格式为 [batch_size, seq_length, feature_dim]
-        # 该格式更符合日常数据处理习惯，默认格式为 [seq_length, batch_size, feature_dim]
-        self.rnn = nn.RNN(input_size, hidden_size, num_layers, batch_first=True)
-        
-        # 定义全连接层（线性层），将RNN隐藏层的输出映射到最终的预测输出维度
-        # 输入维度为RNN隐藏层维度hidden_size，输出维度为预测目标维度output_size
-        self.fc = nn.Linear(hidden_size, output_size)
-    
-    def forward(self, x):
-        # x: [batch_size, seq_len, input_size]
-        h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size)
-        out, _ = self.rnn(x, h0)  # out: [batch_size, seq_len, hidden_size]
-        out = self.fc(out[:, -1, :])  # 只取最后一个时间步的输出
-        return out
-
+# 数据预处理
 def load_and_preprocess_data(file_path, seq_length=5):
     """
     加载CSV数据并创建时间序列样本
@@ -110,167 +32,303 @@ def load_and_preprocess_data(file_path, seq_length=5):
         X.append(data_normalized[i:i+seq_length])
         y.append(data_normalized[i+seq_length])
     
-    # 例如，如果你有一个单变量时间序列（每个时间步只有一个值）
-    # 但模型期望输入形状为 (batch_size, seq_len, input_size)
-    # 那么 input_size = 1，就需要通过 unsqueeze(-1) 把 (batch, seq_len) 变成 (batch, seq_len, 1)
-    # 类似于给单通道信号“加一个通道维度”。
     X = torch.FloatTensor(X).unsqueeze(-1)  # [samples, seq_length, 1]
     y = torch.FloatTensor(y).unsqueeze(-1)  # [samples, 1]
     
     return X, y, data_mean, data_std
 
-def train_model(model, X_train, y_train, epochs=200, lr=0.01):
-    """
-    model: 待训练的RNN模型
-    X_train: 训练输入数据
-    y_train: 训练目标数据
-    epochs: 训练轮数
-    lr: 学习率
-    """
-    criterion = nn.MSELoss() # 损失函数为均方误差
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr) # 优化器为Adam
+# 时间序列预测RNN模型
+class TimeSeriesRNN(nn.Module):
+    def __init__(self, input_size=1, hidden_size=32, output_size=1, num_layers=1):
+        super(TimeSeriesRNN, self).__init__()
+        
+        # 保存参数作为实例变量
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.output_size = output_size
+        self.num_layers = num_layers
+        
+        # 定义RNN层
+        self.rnn = nn.RNN(input_size, hidden_size, num_layers, batch_first=True, dropout=0.2)
+        
+        # 定义全连接层
+        self.fc = nn.Linear(hidden_size, output_size)
+
+    def forward(self, x):
+        # x: [batch_size, seq_len, input_size]
+        h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size)
+        out, _ = self.rnn(x, h0)  # out: [batch_size, seq_len, hidden_size]
+        out = self.fc(out[:, -1, :])  # 只取最后一个时间步的输出
+        return out
+
+# 反向RNN
+class ReverseRNN(nn.Module):
+    def __init__(self, input_dim, hidden_dim, output_dim, num_layers=1):
+        super(ReverseRNN, self).__init__()
+        self.rnn = nn.RNN(
+            input_size=input_dim,
+            hidden_size=hidden_dim,
+            num_layers=num_layers,
+            batch_first=True,
+            # dropout=0.2 if num_layers > 1 else 0
+        )
+        self.fc = nn.Linear(hidden_dim, output_dim)
+        self.num_layers = num_layers
+        self.hidden_dim = hidden_dim
+
+    def forward(self, x):
+        # x: [batch_size, seq_len, input_dim]
+        # 反转输入序列
+        x_reversed = torch.flip(x, dims=[1])
+        batch_size = x.size(0)
+        h0 = torch.zeros(self.num_layers, batch_size, self.hidden_dim)
+        output, hn = self.rnn(x_reversed, h0)
+        out = self.fc(output[:, -1, :])  # 取最后一个时间步的输出
+        return out
+        self.rnn = nn.RNN(
+            input_size = input_dim,
+            hidden_size = hidden_dim,
+            num_layers = num_layers,
+            
+        )
+
+# 双向RNN
+class BidirectionalRNN(nn.Module):
+    def __init__(self, input_dim, hidden_dim, output_dim, num_layers = 1):
+        super(BidirectionalRNN, self).__init__()
+        self.rnn = nn.RNN(
+            input_size = input_dim,
+            hidden_size = hidden_dim,
+            num_layers = num_layers,
+            batch_first = True,
+            bidirectional = True
+        )
+        self.fc = nn.Linear(hidden_dim * 2, output_dim)
+
+    def forward(self, x):
+        batch_size = x.size(0)
+        h0 = torch.zeros(self.rnn.num_layers * 2, batch_size, self.rnn.hidden_size).to(x.device)
+        output, hn = self.rnn(x, h0)
+        
+        # 合并正向和反向的最后一个隐藏状态
+        # hn形状：[num_layers * 2, batch_size, hidden_dim]
+        forward_h = hn[-2] # 正向最后一个隐藏状态
+        backward_h = hn[-1] # 反向最后一个隐藏状态
+        combined_h = torch.cat((forward_h, backward_h), dim=1) # [batch_size, hidden_dim * 2]
+        
+        out = self.fc(combined_h)
+        return out
+
+
+# 多层RNN
+class MultiLayerRNN(nn.Module):
+    def __init__(self, input_dim, hidden_dim, output_dim, num_layers = 2):
+        super(MultiLayerRNN, self).__init__()
+        self.rnn = nn.RNN(
+            input_size = input_dim,
+            hidden_size = hidden_dim,
+            num_layers = num_layers,
+            batch_first = True,
+            # dropout = 0.2
+        )
+
+        self.fc = nn.Linear(hidden_dim, output_dim)
+
+    def forward(self, x):
+        # x: [batch_size, seq_len, input_dim]
+        batch_size = x.size(0)
+        h0 = torch.zeros(self.rnn.num_layers, batch_size, self.rnn.hidden_size)
+        output, hn = self.rnn(x, h0) # output: [batch_size, seq_len, hidden_dim]
+        out = self.fc(hn[-1])  # 只取最后一个时间步的输出
+        return out
+
+# 训练模型
+def train_model(model, X_train, y_train, epochs=300, lr=0.001):
+    criterion = nn.SmoothL1Loss()  # 使用平滑L1损失
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)  # 优化器为Adam
     
-    losses = [] # 记录每次迭代的损失值
-    print("=== 开始训练 ===")
+    # 创建数据加载器
+    train_dataset = TensorDataset(X_train, y_train)
+    train_loader = DataLoader(train_dataset, batch_size=8, shuffle=True)
+    
+    losses = []  # 记录每次迭代的损失值
     for epoch in range(epochs):
         model.train()
         
-        # 前向传播
-        outputs = model(X_train)
-        loss = criterion(outputs, y_train)
-        
-        # 反向传播
-        optimizer.zero_grad() # 清空梯度
-        loss.backward() # 反向传播
-        optimizer.step() # 更新参数
+        for batch_x, batch_y in train_loader:
+            # 前向传播
+            outputs = model(batch_x)
+            loss = criterion(outputs, batch_y)
+            
+            # 反向传播
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
         
         losses.append(loss.item())
-        
         if (epoch + 1) % 20 == 0:
             print(f'Epoch [{epoch+1}/{epochs}], Loss: {loss.item():.6f}')
-    
     return losses
 
-
-# ============== 旧主程序（已注释） ==============
-""" # 模拟数据
-batch_size = 4
-seq_len = 10
-vocab_size = 10000
-embed_size = 300
-hidden_size = 128
-
-# 创建模拟输入（4个句子，每个10个词）
-text = torch.randint(0, vocab_size, (batch_size, seq_len))
-print("输入文本形状:", text.shape)  # [4, 10]
-print("输入示例（第一个句子）:", text[0])
-print()
-
-# 创建模型组件
-embedding_layer = nn.Embedding(vocab_size, embed_size)
-rnn_cell = nn.RNNCell(embed_size, hidden_size)
-
-# 步骤1：词嵌入
-embedded = embedding_layer(text)  # [4, 10, 300]
-print("嵌入后形状:", embedded.shape)
-print("第一个句子的第一个词的向量:", embedded[0, 0, :5], "...")  # 显示前5个维度
-print()
-
-# 步骤2：初始化隐藏状态
-h_t = torch.zeros(batch_size, hidden_size)  # [4, 128]
-print("初始隐藏状态形状:", h_t.shape)
-print("初始隐藏状态值（全零）:", h_t[0, :5], "...")
-print()
-
-# 步骤3：循环处理序列
-print("=== 循环处理序列 ===")
-for t in range(seq_len):
-    print(f"时间步 {t}:")
+# 可视化四种模型对比结果
+def plot_comparison_results(results, y_test, data_mean, data_std):
+    """
+    对比四种RNN模型的预测结果
+    results: dict, 包含每种模型的预测结果和损失
+    """
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
     
-    # 获取当前时间步的输入
-    x_t = embedded[:, t, :]  # [4, 300]
-    print(f"  输入 x_t 形状: {x_t.shape}")
+    # 反归一化真实值
+    y_test_np = y_test.numpy() * data_std + data_mean
     
-    # RNN更新
-    h_t = rnn_cell(x_t, h_t)  # [4, 128]
-    print(f"  更新后 h_t 形状: {h_t.shape}")
+    colors = ['#2E86AB', '#A23B72', '#F18F01', '#C73E1D']
+    model_names = list(results.keys())
     
-    # 查看第一个句子的隐藏状态变化
-    print(f"  第一个句子的隐藏状态前5维: {h_t[0, :5]}")
-    print() """
-
-# ============== RNN时间序列预测训练 ==============
-
-# 加载和预处理数据
-seq_length = 5  # 使用5个历史数据点预测下一个
-file_path = '1952-1988年中国农业实际国民收入指数序列.csv'
-
-print("=== 加载数据 ===")
-X, y, data_mean, data_std = load_and_preprocess_data(file_path, seq_length)
-print(f"数据集大小: X={X.shape}, y={y.shape}")
-print(f"数据均值: {data_mean:.2f}, 标准差: {data_std:.2f}")
-print()
-
-# 划分训练集和测试集（80%训练，20%测试）
-train_size = int(0.8 * len(X))
-X_train, X_test = X[:train_size], X[train_size:]
-y_train, y_test = y[:train_size], y[train_size:]
-print(f"训练集: {X_train.shape}, 测试集: {X_test.shape}")
-print()
-
-# 创建模型
-model = TimeSeriesRNN(input_size=1, hidden_size=32, output_size=1, num_layers=2)
-print("=== 模型结构 ===")
-print(model)
-print()
-
-# 训练模型
-losses = train_model(model, X_train, y_train, epochs=200, lr=0.01)
-
-# 评估模型
-model.eval()
-with torch.no_grad():
-    train_pred = model(X_train)
-    test_pred = model(X_test)
+    # 子图1：四种模型的训练损失曲线对比
+    ax1 = axes[0, 0]
+    for i, (name, data) in enumerate(results.items()):
+        ax1.plot(data['losses'], label=name, color=colors[i], linewidth=2, alpha=0.8)
+    ax1.set_xlabel('Epoch', fontsize=12)
+    ax1.set_ylabel('Loss', fontsize=12)
+    ax1.set_title('Training Loss Comparison', fontsize=14)
+    ax1.legend(fontsize=10)
+    ax1.grid(True, alpha=0.3)
     
-    train_loss = nn.MSELoss()(train_pred, y_train)
-    test_loss = nn.MSELoss()(test_pred, y_test)
+    # 子图2：四种模型的测试集预测对比
+    ax2 = axes[0, 1]
+    x_indices = range(len(y_test_np))
+    ax2.plot(x_indices, y_test_np, 'ko-', label='Actual', linewidth=2, markersize=6)
+    for i, (name, data) in enumerate(results.items()):
+        pred_np = data['test_pred'].numpy() * data_std + data_mean
+        ax2.plot(x_indices, pred_np, 's--', label=name, color=colors[i], alpha=0.7, markersize=5)
+    ax2.set_xlabel('Sample Index', fontsize=12)
+    ax2.set_ylabel('Agricultural Income Index', fontsize=12)
+    ax2.set_title('Test Set Predictions Comparison', fontsize=14)
+    ax2.legend(fontsize=9)
+    ax2.grid(True, alpha=0.3)
     
-    print()
-    print("=== 评估结果 ===")
-    print(f"训练集MSE: {train_loss.item():.6f}")
-    print(f"测试集MSE: {test_loss.item():.6f}")
+    # 子图3：四种模型的MSE对比（柱状图）
+    ax3 = axes[1, 0]
+    train_mses = [results[name]['train_mse'] for name in model_names]
+    test_mses = [results[name]['test_mse'] for name in model_names]
+    x_pos = np.arange(len(model_names))
+    width = 0.35
+    bars1 = ax3.bar(x_pos - width/2, train_mses, width, label='Train MSE', color='#2E86AB', alpha=0.8)
+    bars2 = ax3.bar(x_pos + width/2, test_mses, width, label='Test MSE', color='#C73E1D', alpha=0.8)
+    ax3.set_xlabel('Model', fontsize=12)
+    ax3.set_ylabel('MSE', fontsize=12)
+    ax3.set_title('MSE Comparison', fontsize=14)
+    ax3.set_xticks(x_pos)
+    ax3.set_xticklabels(model_names, rotation=15, ha='right')
+    ax3.legend(fontsize=10)
+    ax3.grid(True, alpha=0.3, axis='y')
+    # 在柱状图上添加数值标签
+    for bar in bars1:
+        height = bar.get_height()
+        ax3.annotate(f'{height:.4f}', xy=(bar.get_x() + bar.get_width()/2, height),
+                    xytext=(0, 3), textcoords="offset points", ha='center', va='bottom', fontsize=8)
+    for bar in bars2:
+        height = bar.get_height()
+        ax3.annotate(f'{height:.4f}', xy=(bar.get_x() + bar.get_width()/2, height),
+                    xytext=(0, 3), textcoords="offset points", ha='center', va='bottom', fontsize=8)
+    
+    # 子图4：预测误差分布对比（箱线图）
+    ax4 = axes[1, 1]
+    errors = []
+    for name in model_names:
+        pred_np = results[name]['test_pred'].numpy() * data_std + data_mean
+        error = pred_np.flatten() - y_test_np.flatten()
+        errors.append(error)
+    bp = ax4.boxplot(errors, labels=model_names, patch_artist=True)
+    for patch, color in zip(bp['boxes'], colors):
+        patch.set_facecolor(color)
+        patch.set_alpha(0.6)
+    ax4.set_xlabel('Model', fontsize=12)
+    ax4.set_ylabel('Prediction Error', fontsize=12)
+    ax4.set_title('Prediction Error Distribution', fontsize=14)
+    ax4.axhline(y=0, color='red', linestyle='--', alpha=0.5)
+    ax4.grid(True, alpha=0.3, axis='y')
+    ax4.set_xticklabels(model_names, rotation=15, ha='right')
+    
+    plt.tight_layout()
+    plt.savefig('rnn_models_comparison.png', dpi=300, bbox_inches='tight')
+    print("\n四种模型对比图表已保存为: rnn_models_comparison.png")
 
-# 可视化结果
-plt.figure(figsize=(12, 5))
+# 主程序
+def main():
+    # 加载数据
+    seq_length = 5  # 使用5个历史数据点预测下一个
+    file_path = '1952-1988年中国农业实际国民收入指数序列.csv'
 
-# 子图1：训练损失曲线
-plt.subplot(1, 2, 1) # 1行2列，第1个子图
-plt.plot(losses, color='#2E86AB', linewidth=2)
-plt.xlabel('Epoch', fontsize=12)
-plt.ylabel('Loss', fontsize=12)
-plt.title('Training Loss Curve', fontsize=14)
-plt.grid(True, alpha=0.3)
+    print("=== 加载数据 ===")
+    X, y, data_mean, data_std = load_and_preprocess_data(file_path, seq_length)
+    print(f"数据集大小: X={X.shape}, y={y.shape}")
+    print(f"数据均值: {data_mean:.2f}, 标准差: {data_std:.2f}")
+    
+    # 划分训练集和测试集（80%训练，20%测试）
+    train_size = int(0.8 * len(X))
+    X_train, X_test = X[:train_size], X[train_size:]
+    y_train, y_test = y[:train_size], y[train_size:]
+    print(f"训练集: {X_train.shape}, 测试集: {X_test.shape}")
+    
+    # 定义四种模型
+    models = {
+        'TimeSeriesRNN': TimeSeriesRNN(input_size=1, hidden_size=32, output_size=1, num_layers=2),
+        'ReverseRNN': ReverseRNN(input_dim=1, hidden_dim=32, output_dim=1, num_layers=2),
+        'BidirectionalRNN': BidirectionalRNN(input_dim=1, hidden_dim=32, output_dim=1, num_layers=2),
+        'MultiLayerRNN': MultiLayerRNN(input_dim=1, hidden_dim=32, output_dim=1, num_layers=3)
+    }
+    
+    # 存储所有模型的结果
+    results = {}
+    
+    # 训练和评估每种模型
+    for name, model in models.items():
+        print(f"\n{'='*50}")
+        print(f"训练模型: {name}")
+        print(f"{'='*50}")
+        print(model)
+        
+        # 训练模型
+        losses = train_model(model, X_train, y_train, epochs=300, lr=0.001)
+        
+        # 评估模型
+        model.eval()
+        with torch.no_grad():
+            train_pred = model(X_train)
+            test_pred = model(X_test)
+            
+            train_mse = nn.MSELoss()(train_pred, y_train).item()
+            test_mse = nn.MSELoss()(test_pred, y_test).item()
+            
+            print(f"\n{name} 评估结果:")
+            print(f"  训练集MSE: {train_mse:.6f}")
+            print(f"  测试集MSE: {test_mse:.6f}")
+        
+        # 存储结果
+        results[name] = {
+            'losses': losses,
+            'train_pred': train_pred,
+            'test_pred': test_pred,
+            'train_mse': train_mse,
+            'test_mse': test_mse
+        }
+    
+    # 打印总结
+    print(f"\n{'='*50}")
+    print("四种模型性能总结")
+    print(f"{'='*50}")
+    print(f"{'模型名称':<20} {'训练集MSE':<15} {'测试集MSE':<15}")
+    print("-" * 50)
+    for name, data in results.items():
+        print(f"{name:<20} {data['train_mse']:<15.6f} {data['test_mse']:<15.6f}")
+    
+    # 找出最优模型
+    best_model = min(results.items(), key=lambda x: x[1]['test_mse'])
+    print(f"\n最优模型（测试集MSE最低）: {best_model[0]}，MSE = {best_model[1]['test_mse']:.6f}")
+    
+    # 可视化对比结果
+    plot_comparison_results(results, y_test, data_mean, data_std)
 
-# 子图2：预测结果对比
-plt.subplot(1, 2, 2)
-# 反归一化处理
-
-train_pred_np = train_pred.numpy() * data_std + data_mean 
-y_train_np = y_train.numpy() * data_std + data_mean
-test_pred_np = test_pred.numpy() * data_std + data_mean
-y_test_np = y_test.numpy() * data_std + data_mean
-
-plt.plot(range(len(y_train_np)), y_train_np, 'o-', label='Train Actual', color='#2E86AB', alpha=0.6)
-plt.plot(range(len(y_train_np)), train_pred_np, 's-', label='Train Predicted', color='#A23B72', alpha=0.6)
-plt.plot(range(len(y_train_np), len(y_train_np) + len(y_test_np)), y_test_np, 'o-', label='Test Actual', color='#F18F01', alpha=0.6)
-plt.plot(range(len(y_train_np), len(y_train_np) + len(y_test_np)), test_pred_np, 's-', label='Test Predicted', color='#C73E1D', alpha=0.6)
-plt.xlabel('Sample Index', fontsize=12)
-plt.ylabel('Agricultural Income Index', fontsize=12)
-plt.title('RNN Predictions vs Actual Values', fontsize=14)
-plt.legend(fontsize=10)
-plt.grid(True, alpha=0.3)
-
-plt.tight_layout()
-plt.savefig('rnn_training_results.png', dpi=300, bbox_inches='tight')
-print("\n结果图表已保存为: rnn_training_results.png")
+if __name__ == "__main__":
+    main()
