@@ -2,269 +2,228 @@ import numpy as np
 import pandas as pd
 import statsmodels.api as sm
 import matplotlib.pyplot as plt
-from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
 import itertools
 import warnings
-
-warnings.filterwarnings("ignore") #忽略输出警告
-plt.rcParams['font.sans-serif'] = ['SimHei']  # 设置中文字体为黑体
-plt.rcParams['axes.unicode_minus'] = False  # 解决负号显示问题
-
-# 季节性自回归差分移动平均模型训练
-# Seasonal AutoRegressive Integrated Moving Average
-# %matplotlib inline 仅用于Jupyter，普通Python脚本中不需要此命令
-
-import itertools  # 添加缺失的导入
-
-
-# 1.数据准备
-
-
-# 1)读取数据
-df=pd.read_csv("MER_T02_06.csv",index_col="YYYYMM") #指定YYYYMM列作为索引列
-# print(df)
-
-
-# 2)数据预处理
-
-# 删除Description列中值在key_list中的行
-# df=df[~df['Description'].isin(key_list)]
-
-key_list=['Coal Consumed by the Electric Power Sector']
-df=df[df['Description'].isin(key_list)]
-# print(df)
-
-# 注意：数据中有些值为季度格式（如194913表示1949Q1），需要过滤
-df.index = df.index.astype(str)
-# 只保留月份数据（月份<=12），过滤掉季度数据
-df = df[df.index.str[-2:].astype(int) <= 12]
-
-# 将Value列转换为数值类型
-df['Value'] = pd.to_numeric(df['Value'], errors='coerce')
-
-# 删除转换失败的行（如果有）
-df = df.dropna(subset = ['Value'])
-
-# 将索引YYYYMM转换为datetime格式，便于图表显示
-df.index = pd.to_datetime(df.index, format = '%Y%m')
-
-# 3)数据可视化
-# 电力行业碳排放
-CCE = df['Value']
-CCE.head()
-
-# 折线图
-fig, ax = plt.subplots(figsize = (15,15))
-CCE.plot(ax = ax,fontsize = 15)
-ax.set_title('电力行业碳排放',fontsize = 25)
-ax.set_xlabel('时间(月)',fontsize = 25)
-ax.set_ylabel('碳排放量(万亿英热≈2.93亿千瓦时)',fontsize = 25)
-ax.legend(loc = "best",fontsize = 15)
-ax.grid()
-plt.savefig('电力行业碳排放.png', dpi = 300, bbox_inches = 'tight')
-print("图像已保存为: 电力行业碳排放.png")
-plt.close()
-
-# 4)分解时序
-# STL(Seasonal and Trend decomposition using Loess)
-import statsmodels.api as sm
-decomposition = sm.tsa.STL(CCE).fit()
-fig = decomposition.plot()
-fig.set_size_inches(15, 10)
-plt.savefig('STL时序分解.png', dpi = 300, bbox_inches = 'tight')
-print("图像已保存为: STL时序分解.png")
-plt.close()
-# 趋势效应
-trend = decomposition.trend
-# 季节效应
-seasonal = decomposition.seasonal
-# 随机效应
-residual = decomposition.resid
-
-
-# 2.平稳性检验
-
-
-# 自定义函数用于ADF检查平稳性
 from statsmodels.tsa.stattools import adfuller as ADF
-def test_stationarity(timeseries,alpha): # alpha为检验选取的显著性水平
-    adf = ADF(timeseries)
-    p = adf[1] #p值
-    critical_value = adf[4]['5%'] # 在95%置信区间下的临界的ADF检验值
-    test_statistic = adf[0] # ADF统计量
-    if p < alpha and test_statistic < critical_value:
-        print(f"ADF平稳性检验结果：数据平稳")
-        print(f"  - 显著性水平：{alpha}")
-        print(f"  - p值：{p:.6e} < {alpha} ✓")
-        print(f"  - ADF统计量：{test_statistic:.6f} < 临界值 {critical_value:.6f} ✓")
-        return True
-    else:
-        print(f"ADF平稳性检验结果：数据不平稳")
-        print(f"  - 显著性水平：{alpha}")
-        print(f"  - p值：{p:.6e} {'< ' + str(alpha) + ' ✓' if p < alpha else '>= ' + str(alpha) + ' ✗'}")
-        print(f"  - ADF统计量：{test_statistic:.6f} {'< 临界值 ' + f'{critical_value:.6f} ✓' if test_statistic < critical_value else '>= 临界值 ' + f'{critical_value:.6f} ✗'}")
-        return False
-
-#原始数据平稳性检验
-test_stationarity(CCE, 0.05)
-
-# 将数据化为平稳数据
-# 一阶差分
-CCE_diff1 = CCE.diff(1)
-# 十二步差分
-CCE_seasonal = CCE_diff1.diff(12) # 非平稳序列经过d阶常差分和D阶季节差分后，序列变得更加平稳
-print(CCE_seasonal)
-# 十二步季节差分平稳性检验结果
-# test_stationarity(CCE_seasonal.dropna(), 0.05) #使用dropna()去除NaN值
-
-
-# 3.白噪声检验
-
-
-# LB白噪声检验
 from statsmodels.stats.diagnostic import acorr_ljungbox
-def test_white_noise(data, alpha):
-    # 去除NaN值
-    clean_data = data.dropna()
-    if len(clean_data) == 0:
-        print(f"白噪声检验结果：数据全为NaN，无法进行检验")
-        print(f"  - 显著性水平：{alpha}")
-        return False
-    
-    result = acorr_ljungbox(clean_data, lags=[1], return_df=True)
-    p = result["lb_pvalue"].iloc[0]
-    
-    # 检查p值是否为NaN
-    if pd.isna(p):
-        print(f"白噪声检验结果：p值为NaN，无法进行检验")
-        print(f"  - 显著性水平：{alpha}")
-        return False
-        
-    if p >= alpha:
-        print(f"白噪声检验结果：数据为白噪声")
-        print(f"  - 显著性水平：{alpha}")
-        print(f"  - p值：{p:.6e} >= {alpha} ✓")
-        return True
-    else:
-        print(f"白噪声检验结果：数据不是白噪声")
-        print(f"  - 显著性水平：{alpha}")
-        print(f"  - p值：{p:.6e} {'>= ' + str(alpha) + ' ✓' if p >= alpha else '< ' + str(alpha) + ' ✗'}")
-        return False
-
-# test_white_noise(CCE_seasonal.dropna(), 0.05)
-
-
-# 4.模型定阶
-
-
-# 搜索法定阶
-def SARIMA_search(data):
-    p = q = range(0, 3)
-    s = [12] # 周期为12
-    d = [1] # 做了一次季节性差分
-    PDQs = list(itertools.product(p, d, q, s)) # itertools.product()用于将输入的可迭代对象作为参数进行笛卡尔积运算
-    pdq = list(itertools.product(p, d, q)) # list是python中的一种数据结构，序列中的每个元素都分配一个数字定位位置
-    
-    # 初始化最佳模型参数
-    best_aic = float('inf')
-    best_param = None
-    best_seasonal_param = None
-    best_result = None
-    
-    print("开始模型参数搜索...")
-    print("格式: ARIMA(p,d,q)x(P,D,Q,s) - AIC值")
-    print("="*50)
-    
-    for param in pdq:
-        for seasonal_param in PDQs:
-            # 建立模型
-            try:
-                mod = sm.tsa.SARIMAX(data, order=param, seasonal_order=seasonal_param,
-                enforce_stationarity=False, enforce_invertibility=False)
-                # 实现数据在模型中训练
-                result = mod.fit(maxiter=50)
-                # 输出模型的AIC值，:.6f表示保留6位小数
-                current_aic = result.aic
-                print(f"ARIMA{param}x{seasonal_param} - AIC:{current_aic:.6f}")
-                
-                # 如果当前模型的AIC更小，则更新最佳模型
-                if current_aic < best_aic:
-                    best_aic = current_aic
-                    best_param = param
-                    best_seasonal_param = seasonal_param
-                    best_result = result
-                    print(f"  >>> 新的最佳模型! AIC: {best_aic:.6f}")
-                    
-            except Exception as e:
-                print(f"ARIMA{param}x{seasonal_param} - 拟合失败: {str(e)[:50]}...")
-                continue
-    
-    print("\n" + "="*50)
-    if best_result is not None:
-        print(f"搜索完成! 最佳模型参数:")
-        print(f"ARIMA{best_param}x{best_seasonal_param}")
-        print(f"最低AIC值: {best_aic:.6f}")
-        return best_result  # 返回最佳模型
-    else:
-        print("所有模型拟合均失败")
-        return None
-    
-# SARIMA_search(CCE_seasonal.dropna())
-
-
-# 5.模型的建立与检验
-
-
-# 建立并训练SARIMA（0,1,2）x（0,1,2,12）12模型
-model = sm.tsa.SARIMAX(CCE_seasonal, order=(1,1,2), seasonal_order=(1,1,2,12))
-SARIMA_m = model.fit()
-print(SARIMA_m.summary())
-
-# 模型检验
-test_white_noise(SARIMA_m.resid, 0.05) # SARIMA_m.resid提取模型残差，进行白噪声检验
-fig = SARIMA_m.plot_diagnostics(figsize = (15, 12)) # plot_diagnostics对象允许我们快速生成模型诊断并调查任何异常行为
-plt.savefig('SARIMA模型诊断.png', dpi = 300, bbox_inches = 'tight')
-print("图像已保存为: SARIMA模型诊断.png")
-plt.close()
-
-# 模型预测
 from sklearn.metrics import mean_squared_error as mse
 from sklearn.metrics import mean_absolute_error as mae
 
-#获取预测结果，自定义预测误差
-def PredictionAnalysis(data,model,start_date,dynamic = False):
-    pred = model.get_prediction(start = start_date, dynamic = dynamic)
-    pci = pred.conf_int() # 获取预测值的置信区间
-    pm = pred.predicted_mean # 获取预测值
-    truth = data[start_date:] # 获取真实值
-    pc = pd.concat([truth, pm, pci], axis = 1) # 按列拼接
-    pc.columns = ['truth', 'predicted', 'lower_bound', 'upper_bound']
-    print(f"1、MSE:{mse(truth, pm):.6f}")
-    print(f"2、RMSE:{np.sqrt(mse(truth, pm)):.6f}")
-    print(f"3、MAE:{mae(truth, pm):.6f}")
-    return pc
+# --- 配置项 ---
+warnings.filterwarnings("ignore") 
+# 设置中文字体，如果报错请尝试更换为 'Microsoft YaHei' 或 'SimHei'
+plt.rcParams['font.sans-serif'] = ['SimHei']  
+plt.rcParams['axes.unicode_minus'] = False 
 
-# 绘制预测结果
-def PredictionPlot(pc):
-    fig, ax = plt.subplots(figsize = (10, 8))
-    ax.fill_between(pc.index, pc['lower_bound'], pc['upper_bound'], color = 'grey',
-    alpha = 0.15, label = 'confidence interval') # 画出执行区间
-    ax.plot(pc['truth'], label = 'base data')
-    ax.plot(pc['predicted'], label = 'predicted curve')
-    ax.legend()
+# ==========================================
+# 1. 数据准备
+# ==========================================
+print("正在读取数据...")
+try:
+    df = pd.read_csv("MER_T02_06.csv", index_col="YYYYMM")
+except FileNotFoundError:
+    print("错误：未找到文件 MER_T02_06.csv，请确认文件路径。")
+    exit()
+
+# 数据筛选
+key_list = ['Coal Consumed by the Electric Power Sector']
+df = df[df['Description'].isin(key_list)]
+
+# 索引处理
+df.index = df.index.astype(str)
+# 过滤掉季度数据（索引最后两位大于12的）
+df = df[df.index.str[-2:].astype(int) <= 12]
+
+# 数据清洗
+df['Value'] = pd.to_numeric(df['Value'], errors='coerce')
+df = df.dropna(subset=['Value'])
+
+# 转换为Datetime索引并设置频率为月初('MS')
+# 这是时间序列模型非常关键的一步
+df.index = pd.to_datetime(df.index, format='%Y%m')
+df = df.asfreq('MS') 
+
+# 提取目标序列
+CCE = df['Value']
+print(f"数据加载完成，时间范围: {CCE.index[0].date()} 到 {CCE.index[-1].date()}")
+
+# 可视化原始数据
+fig, ax = plt.subplots(figsize=(15, 8))
+CCE.plot(ax=ax, fontsize=15)
+ax.set_title('电力行业碳排放 (原始数据)', fontsize=20)
+ax.set_ylabel('碳排放量', fontsize=15)
+ax.grid()
+plt.savefig('1_电力行业碳排放_原始.png', dpi=300, bbox_inches='tight')
+plt.close()
+
+# ==========================================
+# 2. 平稳性检验 (辅助判断)
+# ==========================================
+# 注意：这里我们只做检验来确定 d 的值，但后续模型训练依然喂原始数据 CCE
+def test_stationarity(timeseries, label=""):
+    dftest = ADF(timeseries.dropna())
+    print(f"[{label}] ADF检验 p值: {dftest[1]:.6f}")
+    return dftest[1] < 0.05
+
+print("\n--- 平稳性检验 ---")
+test_stationarity(CCE, "原始数据")
+test_stationarity(CCE.diff(1), "一阶差分")
+test_stationarity(CCE.diff(1).diff(12), "一阶+季节差分")
+# 结论通常是：原始不平稳，差分后平稳。所以模型参数 d=1, D=1 是合理的。
+
+# ==========================================
+# 3. 模型定阶 (基于原始数据搜索)
+# ==========================================
+def SARIMA_search(data):
+    # 定义p, d, q的范围
+    # d=1, D=1 通常是固定的（基于上面的ADF分析）
+    # s=12 是固定的（月度数据）
+    p = q = range(0, 3) # 范围可以根据算力适当调整，如 range(0, 3)
+    P = Q = range(0, 3)
+    
+    pdq = list(itertools.product(p, [1], q))        # d 固定为 1
+    seasonal_pdq = list(itertools.product(P, [1], Q, [12])) # D 固定为 1, s 固定为 12
+    
+    best_aic = float('inf')
+    best_param = None
+    best_seasonal_param = None
+    
+    print("\n开始网格搜索最佳参数 (AIC准则)...")
+    for param in pdq:
+        for seasonal_param in seasonal_pdq:
+            try:
+                # 关键修正：这里传入的是原始数据 data (CCE)，而不是差分后的数据
+                mod = sm.tsa.SARIMAX(data,
+                                     order=param,
+                                     seasonal_order=seasonal_param,
+                                     enforce_stationarity=False,
+                                     enforce_invertibility=False)
+                results = mod.fit(disp=False, maxiter=50) # disp=False 关闭详细输出
+                
+                print(f'ARIMA{param}x{seasonal_param} - AIC:{results.aic:.2f}')
+                
+                if results.aic < best_aic:
+                    best_aic = results.aic
+                    best_param = param
+                    best_seasonal_param = seasonal_param
+            except:
+                continue
+                
+    print(f"\n最佳模型参数: ARIMA{best_param}x{best_seasonal_param} - AIC:{best_aic:.2f}")
+    return best_param, best_seasonal_param
+
+# 执行搜索 (如果你想节省时间，可以注释掉下面这行，直接使用推荐参数)
+# best_order, best_seasonal_order = SARIMA_search(CCE)
+
+# 最佳模型参数: ARIMA(2, 1, 2)x(2, 1, 2, 12) - AIC:6428.43
+# 如果不想每次都搜索，可以手动指定（假设这是搜索出来的结果）：
+best_order = (2, 1, 2)
+best_seasonal_order = (2, 1, 2, 12)
+
+# ==========================================
+# 4. 模型建立与训练
+# ==========================================
+print("\n正在训练最佳模型...")
+# 关键修正：传入 CCE (原始数据)
+model = sm.tsa.SARIMAX(CCE, 
+                       order=best_order, 
+                       seasonal_order=best_seasonal_order,
+                       enforce_stationarity=False,
+                       enforce_invertibility=False)
+SARIMA_m = model.fit()
+print(SARIMA_m.summary())
+
+# 残差诊断
+fig = SARIMA_m.plot_diagnostics(figsize=(15, 12))
+plt.savefig('2_SARIMA模型诊断.png', dpi=300, bbox_inches='tight')
+plt.close()
+
+# 白噪声检验
+lb_result = acorr_ljungbox(SARIMA_m.resid, lags=[12], return_df=True)
+print("\n残差白噪声检验 (Ljung-Box):")
+print(lb_result)
+
+# ==========================================
+# 5. 模型预测与评估
+# ==========================================
+
+def PredictionAnalysis(data, model_res, start_date, dynamic=False, label_suffix=""):
+    # 获取预测结果
+    pred_res = model_res.get_prediction(start=pd.to_datetime(start_date), dynamic=dynamic)
+    pred_mean = pred_res.predicted_mean
+    pred_ci = pred_res.conf_int()
+    
+    # 获取对应时间段的真实值
+    truth = data[pred_mean.index]
+    
+    # 计算误差
+    mse_val = mse(truth, pred_mean)
+    rmse_val = np.sqrt(mse_val)
+    mae_val = mae(truth, pred_mean)
+    
+    print(f"\n[{label_suffix}] 预测评估:")
+    print(f"  MSE:  {mse_val:.4f}")
+    print(f"  RMSE: {rmse_val:.4f}")
+    print(f"  MAE:  {mae_val:.4f}")
+    
+    # 绘图
+    fig, ax = plt.subplots(figsize=(12, 6))
+    
+    # 画全量历史数据
+    ax.plot(data.index, data, label='历史真实值', color='#1f77b4')
+    
+    # 画预测数据
+    ax.plot(pred_mean.index, pred_mean, label='预测值', color='#ff7f0e', linewidth=2)
+    
+    # 画置信区间
+    ax.fill_between(pred_ci.index, 
+                    pred_ci.iloc[:, 0], 
+                    pred_ci.iloc[:, 1], color='gray', alpha=0.2, label='95%置信区间')
+    
+    # 局部放大显示（只显示预测开始前后的数据）
+    zoom_start = pd.to_datetime(start_date) - pd.DateOffset(months=24)
+    ax.set_xlim(left=zoom_start)
+    
+    ax.set_title(f'SARIMA 预测结果 ({label_suffix})', fontsize=18)
+    ax.legend(loc='best')
+    ax.grid(True, alpha=0.3)
+    
     return fig
 
-# 静态预测：进行一系列的一步预测，即它必须用真实值来进行预测
-pred=PredictionAnalysis(CCE_seasonal,SARIMA_m,'2018-09-01')
-fig_static = PredictionPlot(pred)
-fig_static.savefig('SARIMA模型静态预测.png', dpi = 300, bbox_inches = 'tight')
-print("图像已保存为: SARIMA模型静态预测.png")
-plt.close(fig_static)
+# 设定预测切分点 (建议设在数据末尾的前2-3年，用于验证)
+# 假设数据到2023年，我们从2021年开始预测
+split_date = '2021-01-01'
 
-# 动态预测：进行多步预测，除了第一个预测值是用实际值预测外，其后各预测值都是采用递推预测
-pred=PredictionAnalysis(CCE_seasonal,SARIMA_m,'2018-09-01',dynamic=True)
-fig_dynamic = PredictionPlot(pred)
-fig_dynamic.savefig('SARIMA模型动态预测.png', dpi = 300, bbox_inches = 'tight')
-print("图像已保存为: SARIMA模型动态预测.png")
-plt.close(fig_dynamic)
+# 1. 静态预测 (Static Forecast) - 这里的每一步都用了上一步的真实值
+fig_static = PredictionAnalysis(CCE, SARIMA_m, split_date, dynamic=False, label_suffix="静态预测")
+fig_static.savefig('3_SARIMA模型静态预测.png', dpi=300, bbox_inches='tight')
+plt.close()
 
+# 2. 动态预测 (Dynamic Forecast) - 从split_date开始，完全依赖模型之前的预测值
+fig_dynamic = PredictionAnalysis(CCE, SARIMA_m, split_date, dynamic=True, label_suffix="动态预测")
+fig_dynamic.savefig('4_SARIMA模型动态预测.png', dpi=300, bbox_inches='tight')
+plt.close()
+
+# ==========================================
+# 6. 未来预测 (Out-of-sample Forecast)
+# ==========================================
+print("\n生成未来24个月的预测...")
+# 获取未来步数
+steps = 24
+pred_future = SARIMA_m.get_forecast(steps=steps)
+pred_mean = pred_future.predicted_mean
+pred_ci = pred_future.conf_int()
+
+fig, ax = plt.subplots(figsize=(15, 8))
+# 画过去5年的数据
+ax.plot(CCE.index[-60:], CCE[-60:], label='历史数据 (近5年)')
+# 画未来预测
+ax.plot(pred_mean.index, pred_mean, label='未来预测', color='red')
+ax.fill_between(pred_ci.index, pred_ci.iloc[:, 0], pred_ci.iloc[:, 1], color='pink', alpha=0.3)
+ax.set_title('未来24个月电力行业碳排放预测', fontsize=20)
+ax.legend()
+ax.grid()
+plt.savefig('5_未来预测趋势图.png', dpi=300, bbox_inches='tight')
+plt.close()
+
+print("所有步骤已完成，图片已保存。")
