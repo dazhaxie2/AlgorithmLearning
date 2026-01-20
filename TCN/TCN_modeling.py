@@ -7,21 +7,17 @@ from tensorflow import keras
 from sklearn.preprocessing import MinMaxScaler
 from tcn.tcn import TCN
 
-# 强制 Matplotlib 使用 Agg 后端（不弹出窗口）
+# 强制使用 Agg 后端
 import matplotlib
 matplotlib.use('Agg') 
 import matplotlib.pyplot as plt
 
-# --- 全局超参数 ---
-window_size = 30
-filter_nums = 64
-kernel_size = 3
-epochs = 300
-ROLL_START_IDX = 2500  # 滚动预测的起始索引
-FUTURE_STEPS = 500     # 滚动预测步数
+# --- 实验配置 ---
+ROLL_START_IDX = 2500  # 滚动预测起始点
+FUTURE_STEPS = 500     # 滚动预测长度
 
-def get_full_processed_data(csv_path='./上证指数历史数据.csv'):
-    """获取全量处理后的数据、特征矩阵和归一化器"""
+def get_data(csv_path='./上证指数历史数据.csv', window_size=30):
+    """根据不同的 window_size 准备数据"""
     df = pd.read_csv(csv_path)
     df['开盘'] = df['开盘'].astype(str).str.replace(',', '').astype(float)
     df['开盘'] = df['开盘'].ffill()
@@ -34,96 +30,89 @@ def get_full_processed_data(csv_path='./上证指数历史数据.csv'):
         X.append(data_scaled[i : i + window_size])
         y.append(data_scaled[i + window_size])
         
-    return np.array(X)[..., np.newaxis], np.array(y), scaler, data_scaled
+    return np.array(X)[..., np.newaxis], np.array(y), scaler
 
-def build_model_fn():
-    """构建 TCN 顺序模型"""
+def build_and_train(X, y, window_size, filter_nums, model_name):
+    """构建并训练指定参数的模型"""
     model = keras.models.Sequential([
         keras.layers.Input(shape=(window_size, 1)),
-        TCN(nb_filters=filter_nums, kernel_size=kernel_size, dilations=[1, 2, 4, 8]),
+        TCN(nb_filters=filter_nums, kernel_size=3, dilations=[1, 2, 4, 8]),
         keras.layers.Dense(1, activation='linear')
     ])
     model.compile(optimizer='adam', loss='mse')
+    
+    print(f"\n>>> 正在训练模型: {model_name} (Window={window_size}, Filters={filter_nums})")
+    # 训练集划分
+    split = int(0.8 * len(X))
+    model.fit(X[:split], y[:split], epochs=50, batch_size=32, verbose=0) # 实验演示使用50轮以节省时间
     return model
 
 def rolling_predict(model, start_window, steps):
-    """从指定窗口开始执行长时间步滚动预测"""
-    curr_input = start_window.reshape(1, window_size, 1).astype(np.float32)
+    """执行滚动预测"""
+    curr_input = start_window.reshape(1, -1, 1).astype(np.float32)
+    window_len = start_window.shape[0]
     preds = []
     for _ in range(steps):
         p = model.predict(curr_input, verbose=0)
         preds.append(p[0, 0])
         new_val = p.reshape(1, 1, 1)
-        # 将预测值拼接至窗口末尾，剔除首位
         curr_input = np.concatenate([curr_input[:, 1:, :], new_val], axis=1)
     return np.array(preds)
 
-def train_model():
-    """执行训练（若权重不存在）"""
-    weights_path = 'tcn_model.weights.h5'
-    if os.path.exists(weights_path):
-        return
-    
-    X, y, scaler, _ = get_full_processed_data()
-    split = int(0.8 * len(X))
-    model = build_model_fn()
-    model.fit(X[:split], y[:split], validation_split=0.1, epochs=epochs, batch_size=32)
-    model.save_weights(weights_path)
-    joblib.dump(scaler, 'scaler.pkl')
+def calculate_rmse(true, pred):
+    """计算 RMSE 误差"""
+    return np.sqrt(np.mean(np.square(true - pred)))
 
-def predict_and_compare():
-    """主逻辑：逐步预测 vs 滚动预测"""
-    # 1. 加载模型与预热
-    model = build_model_fn()
-    model.predict(np.zeros((1, window_size, 1)), verbose=0) 
-    model.load_weights('tcn_model.weights.h5')
-    scaler = joblib.load('scaler.pkl')
+def run_experiment():
+    # --- 实验 1: 基准参数 ---
+    w1, f1 = 30, 32
+    X1, y1, scaler1 = get_data(window_size=w1)
+    model1 = build_and_train(X1, y1, w1, f1, "Exp_Baseline")
     
-    # 2. 获取数据（全量数据用于对比展示）
-    X_all, y_true_scaled, _, _ = get_full_processed_data()
+    # --- 实验 2: 增强参数 ---
+    w2, f2 = 60, 128  # 增加窗口长度到60，滤波器到128
+    X2, y2, scaler2 = get_data(window_size=w2)
+    model2 = build_and_train(X2, y2, w2, f2, "Exp_Enhanced")
     
-    # 3. 逐步预测 (One-step Prediction) - 基于真实历史
-    print("正在执行逐步预测...")
-    step_by_step_preds = model.predict(X_all, verbose=1).flatten()
+    # --- 提取真实值用于对比 ---
+    # 获取滚动预测覆盖范围内的真实数据 (反归一化)
+    # 注意：y1 的索引是从 w1 开始的，需要对齐
+    true_segment_scaled = y1[ROLL_START_IDX : ROLL_START_IDX + FUTURE_STEPS]
+    y_true = scaler1.inverse_transform(true_segment_scaled.reshape(-1, 1)).flatten()
     
-    # 4. 滚动预测 (Rolling Prediction) - 从 2500 步开始
-    # 注意：X_all[i] 是预测 y_true_scaled[i] 的输入窗口
-    start_window = X_all[ROLL_START_IDX]
-    roll_preds_scaled = rolling_predict(model, start_window, FUTURE_STEPS)
+    # --- 执行滚动预测 ---
+    print("\n>>> 正在执行滚动预测对比...")
+    roll1_scaled = rolling_predict(model1, X1[ROLL_START_IDX], FUTURE_STEPS)
+    roll2_scaled = rolling_predict(model2, X2[ROLL_START_IDX], FUTURE_STEPS)
     
-    # 5. 反归一化
-    def denorm(d): return scaler.inverse_transform(d.reshape(-1, 1)).flatten()
-    y_true = denorm(y_true_scaled)
-    y_step = denorm(step_by_step_preds)
-    y_roll = denorm(roll_preds_scaled)
+    y_roll1 = scaler1.inverse_transform(roll1_scaled.reshape(-1, 1)).flatten()
+    y_roll2 = scaler2.inverse_transform(roll2_scaled.reshape(-1, 1)).flatten()
     
-    # 6. 绘图保存
-    plt.figure(figsize=(16, 8))
+    # --- 计算 RMSE ---
+    rmse1 = calculate_rmse(y_true, y_roll1)
+    rmse2 = calculate_rmse(y_true, y_roll2)
     
-    # 绘制真实曲线
-    plt.plot(y_true, label='Actual Price', color='black', alpha=0.3, linewidth=1)
+    print("-" * 30)
+    print(f"实验 1 (W={w1}, F={f1}) RMSE: {rmse1:.2f}")
+    print(f"实验 2 (W={w2}, F={f2}) RMSE: {rmse2:.2f}")
+    print("-" * 30)
     
-    # 绘制全量逐步预测（模型在已知数据上的表现）
-    plt.plot(y_step, label='One-step Prediction', color='blue', alpha=0.6, linestyle='--')
+    # --- 绘图 ---
+    plt.figure(figsize=(14, 7))
+    plt.plot(y_true, label='Actual Price (Ground Truth)', color='black', linewidth=2)
+    plt.plot(y_roll1, label=f'Exp 1 (W={w1}, F={f1}) - RMSE: {rmse1:.2f}', linestyle='--')
+    plt.plot(y_roll2, label=f'Exp 2 (W={w2}, F={f2}) - RMSE: {rmse2:.2f}', linestyle='-')
     
-    # 绘制从 2500 开始的滚动预测（由于是从索引2500开始向后预测，其起点对应真实数据的 2500 处）
-    roll_range = range(ROLL_START_IDX, ROLL_START_IDX + FUTURE_STEPS)
-    plt.plot(roll_range, y_roll, label=f'Rolling Forecast from Index {ROLL_START_IDX}', color='red', linewidth=2)
-    
-    # 标记起点
-    plt.axvline(x=ROLL_START_IDX, color='green', linestyle=':', label='Rolling Start Point')
-    
-    plt.title(f"TCN Comparison: One-step vs Rolling Forecast (Steps={FUTURE_STEPS})")
-    plt.xlabel("Sample Index")
+    plt.title(f"Impact of Window Size & Filters on 500-Step Rolling Forecast")
+    plt.xlabel("Steps from Start Index (2500)")
     plt.ylabel("Price")
     plt.legend()
-    plt.grid(True, alpha=0.2)
+    plt.grid(True, alpha=0.3)
     
-    save_path = 'tcn_comparison_result.png'
+    save_path = 'tcn_parameter_experiment.png'
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
     plt.close()
-    print(f"\n[成功] 滚动预测完成。对比图已保存至: {save_path}")
+    print(f"\n对比实验完成！结果图表已保存至: {save_path}")
 
 if __name__ == '__main__':
-    # train_model()
-    predict_and_compare()
+    run_experiment()
