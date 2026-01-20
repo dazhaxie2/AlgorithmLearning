@@ -1,0 +1,19 @@
+conda activate python_algorithms
+cd ARIMA
+python ARIMA_modeling.py
+
+cd RNN
+python RNN_gradient_vanishing_demo.py
+
+python XGBoost_modeling.py
+
+# 自定义PowerShell别名（VSCode终端生效）
+Set-Alias -Name py -Value python
+
+# 【关键修改】用函数替代别名，支持带参数的命令
+function conapa {
+    conda activate python_algorithms
+}
+function cdalg {
+    cd E:\PyCharm_Projects\AlgorithmLearning\
+}
